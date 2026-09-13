@@ -1,7 +1,7 @@
 //! EtherCrab error types.
 
 pub use crate::mailbox::coe::CoeAbortCode;
-use crate::{AlStatusCode, SubDeviceState, command::Command, fmt};
+use crate::{AlStatusCode, SubDeviceState, command::Command, fmt, mailbox::soe::SoeErrorCode};
 use core::num::TryFromIntError;
 
 /// An EtherCrab error.
@@ -95,6 +95,9 @@ pub enum Error {
 
     /// A distributed clock error occurred.
     DistributedClock(DistributedClockError),
+
+    /// A SoE error was returned
+    SoeError(SoeErrorCode),
 }
 
 #[cfg(feature = "std")]
@@ -154,6 +157,7 @@ impl core::fmt::Display for Error {
             Error::Wire(e) => write!(f, "wire encode/decode error: {}", e),
             Error::SubDevice(e) => write!(f, "subdevice error: {}", e),
             Error::DistributedClock(e) => write!(f, "distributed clock: {}", e),
+            Error::SoeError(e) => write!(f, "{e:?}"),
         }
     }
 }

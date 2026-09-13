@@ -15,6 +15,7 @@ use crate::{
     error::{Error, IgnoreNoCategory, MailboxError},
     fmt,
     mailbox::coe::{self, Coe, SdoExpeditedPayload, SubIndex},
+    mailbox::soe::Soe,
     maindevice::MainDevice,
     pdu_loop::ReceivedPdu,
     register::{DcSupport, RegisterAddress, SupportFlags},
@@ -29,7 +30,8 @@ use core::{
 };
 use embedded_io_async::{Read, Write as EioWrite};
 use ethercrab_wire::{
-    EtherCrabWireReadSized, EtherCrabWireReadWrite, EtherCrabWireWrite, EtherCrabWireWriteSized,
+    EtherCrabWireRead, EtherCrabWireReadSized, EtherCrabWireReadWrite, EtherCrabWireWrite,
+    EtherCrabWireWriteSized,
 };
 
 use self::eeprom::SubDeviceEeprom;
@@ -821,6 +823,80 @@ where
         &self,
     ) -> Result<Option<ObjectDescriptionListQueryCounts>, Error> {
         Coe::new(self).sdo_info_object_quantities().await
+    }
+
+    ///
+    pub async fn idn_read_status(&self, drive_num: u8, idn_address: u16) -> Result<u16, Error> {
+        Soe::new(self).idn_read_status(drive_num, idn_address).await
+    }
+
+    ///
+    pub async fn idn_read_name(&self, drive_num: u8, idn_address: u16) -> Result<String, Error> {
+        Soe::new(self).idn_read_name(drive_num, idn_address).await
+    }
+
+    ///
+    pub async fn idn_read_attribute(&self, drive_num: u8, idn_address: u16) -> Result<u32, Error> {
+        Soe::new(self)
+            .idn_read_attribute(drive_num, idn_address)
+            .await
+    }
+
+    ///
+    pub async fn idn_read_units(&self, drive_num: u8, idn_address: u16) -> Result<String, Error> {
+        Soe::new(self).idn_read_units(drive_num, idn_address).await
+    }
+
+    ///
+    pub async fn idn_read_min<T>(&self, drive_num: u8, idn_address: u16) -> Result<T, Error>
+    where
+        T: EtherCrabWireRead,
+    {
+        Soe::new(self)
+            .idn_read_min::<T>(drive_num, idn_address)
+            .await
+    }
+    ///
+    pub async fn idn_read_max<T>(&self, drive_num: u8, idn_address: u16) -> Result<T, Error>
+    where
+        T: EtherCrabWireRead,
+    {
+        Soe::new(self)
+            .idn_read_max::<T>(drive_num, idn_address)
+            .await
+    }
+    ///
+    pub async fn idn_read_data<T>(&self, drive_num: u8, idn_address: u16) -> Result<T, Error>
+    where
+        T: EtherCrabWireRead,
+    {
+        Soe::new(self)
+            .idn_read_data::<T>(drive_num, idn_address)
+            .await
+    }
+    ///
+    pub async fn idn_read_default<T>(&self, drive_num: u8, idn_address: u16) -> Result<T, Error>
+    where
+        T: EtherCrabWireRead,
+    {
+        Soe::new(self)
+            .idn_read_default::<T>(drive_num, idn_address)
+            .await
+    }
+
+    ///
+    pub async fn idn_write_data<T>(
+        &self,
+        drive_num: u8,
+        idn_address: u16,
+        value: T,
+    ) -> Result<(), Error>
+    where
+        T: EtherCrabWireWrite + Debug,
+    {
+        Soe::new(self)
+            .idn_write_data::<T>(drive_num, idn_address, value)
+            .await
     }
 }
 
