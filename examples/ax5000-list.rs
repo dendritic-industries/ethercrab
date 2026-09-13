@@ -4,7 +4,7 @@ use env_logger::Env;
 use ethercrab::{
     MainDevice, MainDeviceConfig, PduStorage, Timeouts, error::Error, idn, std::ethercat_now,
 };
-use std::{println, str::FromStr, sync::Arc};
+use std::{str::FromStr, sync::Arc};
 
 /// Maximum number of SubDevices that can be stored. This must be a power of 2 greater than 1.
 const MAX_SUBDEVICES: usize = 128;
@@ -72,10 +72,11 @@ fn main() -> Result<(), Error> {
                 subdevice.identity()
             );
 
+            // Read bus voltage IDN (S-0-0380)
             let param_name = subdevice.idn_read_name(0, idn!(S, 0, 0380)).await?;
             log::info!("{:?}", param_name);
-            let feedback_value = subdevice.idn_read_data::<u16>(0, idn!(S, 0, 0380)).await?;
-            log::info!("{:?}", feedback_value);
+            let bus_voltage = subdevice.idn_read_data::<u16>(0, idn!(S, 0, 0380)).await?;
+            log::info!("{:?}", (bus_voltage as f64) / 10.0);
         }
 
         Ok(())

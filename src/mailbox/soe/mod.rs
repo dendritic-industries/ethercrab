@@ -107,9 +107,6 @@ where
         header.pack_to_slice(&mut request[..header_len])?;
 
         let data: &[u8] = &request;
-        println!("Request: ");
-        println!("{:?}", &data);
-        // header.pack_to_slice(&mut request[header_len..])?;
 
         // Send data to SubDevice IN mailbox
         self.subdevice
@@ -123,11 +120,7 @@ where
             .wait_for_mailbox_response(&read_mailbox)
             .await?;
 
-        let data: &[u8] = &response;
-        println!("Response: ");
-        println!("{:?}", &data);
         let headers = IdnHeader::unpack_from_slice(&response)?;
-        println!("response length: {}", headers.mailbox_header.length);
         response.trim_front(IdnHeader::PACKED_LEN);
 
         // Check the response header error bit
@@ -136,7 +129,6 @@ where
             SoeErrorFlag::ErrorOccurred => {
                 let payload: &[u8] = &response;
                 let error_code = u16::from_le_bytes([payload[0], payload[1]]);
-                println!("{}", error_code);
 
                 return Err(SoeError(SoeErrorCode::from(error_code)));
             }
@@ -224,7 +216,6 @@ where
                     data,
                     data.len(),
                 );
-                println!("{:?}", e);
 
                 Error::Pdu(PduError::Decode)
             })?
@@ -267,7 +258,7 @@ where
         self.idn_read_flag::<T>(drive_num, idn_address, SoeElementFlag::MinimumValue)
             .await
     }
-    
+
     pub async fn idn_read_max<T>(&self, drive_num: u8, idn_address: u16) -> Result<T, Error>
     where
         T: EtherCrabWireRead,
