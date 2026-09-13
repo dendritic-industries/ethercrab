@@ -20,7 +20,6 @@ use crate::{
 use core::ops::Deref;
 use core::{any::type_name, fmt::Debug};
 use ethercrab_wire::{EtherCrabWireRead, EtherCrabWireSized, EtherCrabWireWrite};
-use std::println;
 
 pub(crate) use headers::{SoeHeader, SoeOpcode};
 
@@ -105,8 +104,6 @@ where
 
         let mut request = vec![0u8; total_len];
         header.pack_to_slice(&mut request[..header_len])?;
-
-        let data: &[u8] = &request;
 
         // Send data to SubDevice IN mailbox
         self.subdevice
@@ -208,7 +205,7 @@ where
         let data: &[u8] = &response[..l];
 
         Ok(str::from_utf8(data)
-            .map_err(|e| {
+            .map_err(|_| {
                 fmt::error!(
                     "SDO expedited data decode T: {} (len {}) data {:?} (len {})",
                     type_name::<String>(),
