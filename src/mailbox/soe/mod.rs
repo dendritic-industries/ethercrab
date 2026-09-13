@@ -297,19 +297,3 @@ where
     }
 }
 
-//TODO
-#[allow(missing_docs)]
-#[macro_export]
-macro_rules! idn {
-    (S, $group:expr, $number:expr) => {{
-        const G: u16 = ($group & 0x07) << 12;
-        const N: u16 = $number & 0x0FFF;
-        G | N
-    }};
-    (P, $group:expr, $number:expr) => {{
-        const SET: u16 = 1 << 15;
-        const G: u16 = ($group & 0x07) << 12;
-        const N: u16 = $number & 0x0FFF;
-        SET | G | N
-    }};
-}
