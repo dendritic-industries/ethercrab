@@ -17,9 +17,6 @@ use crate::{
         },
     },
     pdu_loop::ReceivedPdu,
-    register::RegisterAddress,
-    subdevice::Mailbox,
-    timer_factory::IntoTimeout,
 };
 use core::ops::Deref;
 use core::{any::type_name, fmt::Debug};
