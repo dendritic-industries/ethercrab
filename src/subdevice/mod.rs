@@ -877,6 +877,17 @@ where
             .await
     }
 
+    /// Read the data list located at IDN as a vec of u16s
+    pub async fn idn_read_data_list(
+        &self,
+        drive_num: u8,
+        idn_address: u16,
+    ) -> Result<(u16, Vec<u16>), Error> {
+        Soe::new(self)
+            .idn_read_data_list(drive_num, idn_address)
+            .await
+    }
+
     /// Write data to the SoE IDN
     pub async fn idn_write_data<T>(
         &self,

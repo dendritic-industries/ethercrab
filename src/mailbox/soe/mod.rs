@@ -104,6 +104,9 @@ where
 
         let mut request = vec![0u8; total_len];
         header.pack_to_slice(&mut request[..header_len])?;
+        if data.packed_len() > 0 {
+            data.pack_to_slice(&mut request[header_len..])?;
+        }
 
         // Send data to SubDevice IN mailbox
         self.subdevice
@@ -165,7 +168,7 @@ where
 
         let header = IdnHeader::for_reading(counter, drive_num, idn_address, flag);
 
-        let (headers, response) = self.mailbox_write_read(header, []).await?;
+        let (headers, response) = self.mailbox_write_read(header, ()).await?;
 
         let l = (headers.mailbox_header.length as usize) - SoeHeader::PACKED_LEN;
 
@@ -198,7 +201,7 @@ where
             SoeElementFlag::NameDescriptor,
         );
 
-        let (headers, response) = self.mailbox_write_read(header, []).await?;
+        let (headers, response) = self.mailbox_write_read(header, ()).await?;
 
         let l = (headers.mailbox_header.length as usize) - SoeHeader::PACKED_LEN;
 
@@ -229,7 +232,7 @@ where
 
         let header = IdnHeader::for_reading(counter, drive_num, idn_address, SoeElementFlag::Unit);
 
-        let (headers, response) = self.mailbox_write_read(header, []).await?;
+        let (headers, response) = self.mailbox_write_read(header, &()).await?;
 
         let l = (headers.mailbox_header.length as usize) - SoeHeader::PACKED_LEN;
 
@@ -272,6 +275,48 @@ where
             .await
     }
 
+    pub async fn idn_read_data_list(
+        &self,
+        drive_num: u8,
+        idn_address: u16,
+    ) -> Result<(u16, Vec<u16>), Error> {
+        let counter = self.subdevice.mailbox_counter();
+
+        let header =
+            IdnHeader::for_reading(counter, drive_num, idn_address, SoeElementFlag::ValueData);
+
+        let (headers, response) = self.mailbox_write_read(header, ()).await?;
+
+        let l = (headers.mailbox_header.length as usize) - SoeHeader::PACKED_LEN;
+
+        let data: &[u8] = &response[..l];
+
+        let data_words: Vec<u16> = data
+            .chunks_exact(2)
+            .map(|chunk| {
+                let array: [u8; 2] = chunk.try_into().unwrap();
+                u16::from_le_bytes(array)
+            })
+            .collect();
+
+        // let actual_length = data_words[0];
+        let max_length = data_words[1];
+
+        Ok((max_length, data_words[2..].to_vec()))
+
+        // String::unpack_from_slice(data).map_err(|_| {
+        //     fmt::error!(
+        //         "SDO expedited data decode T: {} (len {}) data {:?} (len {})",
+        //         type_name::<String>(),
+        //         data.len(),
+        //         data,
+        //         data.len(),
+        //     );
+
+        //     Error::Pdu(PduError::Decode)
+        // })
+    }
+
     pub async fn idn_write_data<T>(
         &self,
         drive_num: u8,
@@ -287,7 +332,7 @@ where
             counter,
             drive_num,
             idn_address,
-            SoeElementFlag::Unit,
+            SoeElementFlag::ValueData,
             value.packed_len() as u16,
         );
 
