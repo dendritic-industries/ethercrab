@@ -825,29 +825,29 @@ where
         Coe::new(self).sdo_info_object_quantities().await
     }
 
-    ///
+    /// Read the data status word (u16) for the SoE IDN
     pub async fn idn_read_status(&self, drive_num: u8, idn_address: u16) -> Result<u16, Error> {
         Soe::new(self).idn_read_status(drive_num, idn_address).await
     }
 
-    ///
+    /// Read the ASCII name for the SoE IDN
     pub async fn idn_read_name(&self, drive_num: u8, idn_address: u16) -> Result<String, Error> {
         Soe::new(self).idn_read_name(drive_num, idn_address).await
     }
 
-    ///
+    /// Read the attribute word (u32) for the SoE IDN
     pub async fn idn_read_attribute(&self, drive_num: u8, idn_address: u16) -> Result<u32, Error> {
         Soe::new(self)
             .idn_read_attribute(drive_num, idn_address)
             .await
     }
 
-    ///
+    /// Read the ASCII unit name for the SoE IDN
     pub async fn idn_read_units(&self, drive_num: u8, idn_address: u16) -> Result<String, Error> {
         Soe::new(self).idn_read_units(drive_num, idn_address).await
     }
 
-    ///
+    /// Read the minimum allowable value for the SoE IDN
     pub async fn idn_read_min<T>(&self, drive_num: u8, idn_address: u16) -> Result<T, Error>
     where
         T: EtherCrabWireRead,
@@ -856,7 +856,8 @@ where
             .idn_read_min::<T>(drive_num, idn_address)
             .await
     }
-    ///
+
+    /// Read the maximum allowable value for the SoE IDN
     pub async fn idn_read_max<T>(&self, drive_num: u8, idn_address: u16) -> Result<T, Error>
     where
         T: EtherCrabWireRead,
@@ -865,7 +866,8 @@ where
             .idn_read_max::<T>(drive_num, idn_address)
             .await
     }
-    ///
+
+    /// Read the current data value for the SoE IDN
     pub async fn idn_read_data<T>(&self, drive_num: u8, idn_address: u16) -> Result<T, Error>
     where
         T: EtherCrabWireRead,
@@ -874,17 +876,8 @@ where
             .idn_read_data::<T>(drive_num, idn_address)
             .await
     }
-    ///
-    pub async fn idn_read_default<T>(&self, drive_num: u8, idn_address: u16) -> Result<T, Error>
-    where
-        T: EtherCrabWireRead,
-    {
-        Soe::new(self)
-            .idn_read_default::<T>(drive_num, idn_address)
-            .await
-    }
 
-    ///
+    /// Write data to the SoE IDN
     pub async fn idn_write_data<T>(
         &self,
         drive_num: u8,

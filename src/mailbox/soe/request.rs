@@ -37,7 +37,7 @@ impl IdnHeader {
             opcode: SoeOpcode::ReadRequest,
             fragmentation: SoeFragmentationFlag::CompleteTransmission,
             error: SoeErrorFlag::NoError,
-            drive_num: drive_num,
+            drive_num,
             element_flag: flag,
             idn: idn_address,
         };
@@ -67,7 +67,7 @@ impl IdnHeader {
             opcode: SoeOpcode::WriteRequest,
             fragmentation: SoeFragmentationFlag::CompleteTransmission,
             error: SoeErrorFlag::NoError,
-            drive_num: drive_num,
+            drive_num,
             element_flag: flag,
             idn: idn_address,
         };

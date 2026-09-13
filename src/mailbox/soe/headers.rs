@@ -51,7 +51,6 @@ pub enum SoeElementFlag {
     MinimumValue = 0b00010000,
     MaximumValue = 0b00100000,
     ValueData = 0b01000000,
-    DefaultValue = 0b10000000,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ethercrab_wire::EtherCrabWireReadWrite)]

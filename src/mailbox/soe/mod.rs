@@ -267,6 +267,7 @@ where
         self.idn_read_flag::<T>(drive_num, idn_address, SoeElementFlag::MinimumValue)
             .await
     }
+    
     pub async fn idn_read_max<T>(&self, drive_num: u8, idn_address: u16) -> Result<T, Error>
     where
         T: EtherCrabWireRead,
@@ -274,18 +275,12 @@ where
         self.idn_read_flag::<T>(drive_num, idn_address, SoeElementFlag::MaximumValue)
             .await
     }
+
     pub async fn idn_read_data<T>(&self, drive_num: u8, idn_address: u16) -> Result<T, Error>
     where
         T: EtherCrabWireRead,
     {
         self.idn_read_flag::<T>(drive_num, idn_address, SoeElementFlag::ValueData)
-            .await
-    }
-    pub async fn idn_read_default<T>(&self, drive_num: u8, idn_address: u16) -> Result<T, Error>
-    where
-        T: EtherCrabWireRead,
-    {
-        self.idn_read_flag::<T>(drive_num, idn_address, SoeElementFlag::DefaultValue)
             .await
     }
 
