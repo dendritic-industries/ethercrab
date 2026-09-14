@@ -226,7 +226,6 @@ pub type DefaultLock = spin::rwlock::RwLock<(), spin::Yield>;
 #[cfg(not(feature = "std"))]
 pub type DefaultLock = spin::rwlock::RwLock<(), spin::Spin>;
 
-
 /// Convert an SoE IDN address to standard string representation
 pub fn idn_to_str(idn: u16) -> String {
     let is_standard = 0x8000 & idn == 0;
