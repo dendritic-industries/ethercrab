@@ -294,6 +294,8 @@ fn main() -> Result<(), Error> {
         let term = Arc::new(AtomicBool::new(false));
         signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term))
             .expect("Register hook");
+        let mut exit_request = false;
+        let mut ready_to_exit = false;
 
         // Initialize position command to the current position to prevent jumps
         let mut position_command: i32 = group
@@ -308,7 +310,7 @@ fn main() -> Result<(), Error> {
 
             for subdevice in group.iter(&maindevice) {
                 if subdevice.name() == "AX5203-0000-0216" {
-                    if position_command == 0 {
+                    if exit_request {
                         control_word = 0;
                     } else {
                         // Bit 13 - Restart, Bit 14 - Enable, Bit 15 - Drive on
@@ -336,6 +338,11 @@ fn main() -> Result<(), Error> {
                             position_command += 200 * 8;
                         }
 
+                        // If exit has been requested, check if power is off
+                        if exit_request && (status_word >> 14 < 3) {
+                            ready_to_exit = true;
+                        }
+
                         // // Leave this commented out to avoid jitter issues
                         // log::info!(
                         //     "{status_word:0b}: {position_feedback}\t {following_distance}" //\t {torque_feedback}"
@@ -358,8 +365,13 @@ fn main() -> Result<(), Error> {
             tick_interval.next().await;
 
             // Hook signal so we can write CSV data before exiting
-            if term.load(Ordering::Relaxed) {
+            if term.load(Ordering::Relaxed) && !exit_request {
                 log::info!("Exiting...");
+                exit_request = true;
+            }
+
+            if ready_to_exit {
+                log::info!("Ready to exit.");
                 break;
             }
         }
