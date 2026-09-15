@@ -74,7 +74,7 @@ pub struct SoeHeader {
     #[wire(bytes = 1)]
     pub element_flag: SoeElementFlag,
 
-    // Bytes 2 & 3 - IDN
+    // Bytes 2 & 3 - IDN if fragmentation is not set, number of frames remaining if it is.
     #[wire(bytes = 2)]
     pub idn: u16,
 }
