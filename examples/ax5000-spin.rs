@@ -5,11 +5,9 @@
 
 use env_logger::Env;
 use ethercrab::{
-    DcSync, MainDevice, MainDeviceConfig, PduStorage, RegisterAddress,
-    SubDeviceState::SafeOp,
-    Timeouts,
+    DcSync, MainDevice, MainDeviceConfig, PduStorage, RegisterAddress, Timeouts,
     error::Error,
-    idn, idn_to_str,
+    idn,
     std::ethercat_now,
     subdevice_group::{CycleInfo, DcConfiguration, TxRxResponse},
 };
@@ -29,11 +27,12 @@ use ta::indicators::ExponentialMovingAverage;
 const MAX_SUBDEVICES: usize = 16;
 const MAX_PDU_DATA: usize = PduStorage::element_size(1100);
 const MAX_FRAMES: usize = 32;
-const PDI_LEN: usize = 64;
+const PDI_LEN: usize = 128;
 
 static PDU_STORAGE: PduStorage<MAX_FRAMES, MAX_PDU_DATA> = PduStorage::new();
 
-const TICK_INTERVAL: Duration = Duration::from_micros(250);
+// Can only be either 250us or 125us from ESI
+const TICK_INTERVAL: Duration = Duration::from_micros(2000);
 
 fn main() -> Result<(), Error> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
@@ -42,7 +41,7 @@ fn main() -> Result<(), Error> {
         .nth(1)
         .expect("Provide network interface as first argument.");
 
-    log::info!("Starting Distributed Clocks demo...");
+    log::info!("Starting AX5000 SoE demo...");
     log::info!("Run with RUST_LOG=ethercrab=debug or =trace for debug information");
 
     let (tx, rx, pdu_loop) = PDU_STORAGE.try_split().expect("can only split once");
@@ -80,10 +79,32 @@ fn main() -> Result<(), Error> {
     thread::sleep(Duration::from_millis(200));
 
     #[cfg(target_os = "linux")]
-    thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Crossplatform(
-        thread_priority::ThreadPriorityValue::try_from(48u8).unwrap(),
-    ))
-    .expect("Main thread prio");
+    {
+        // Set thread priority to realtime
+        use thread_priority::{
+            RealtimeThreadSchedulePolicy, ThreadPriority, ThreadPriorityValue,
+            ThreadSchedulePolicy, set_thread_priority_and_policy, thread_native_id,
+        };
+        let thread_id = thread_native_id();
+        set_thread_priority_and_policy(
+            thread_id,
+            ThreadPriority::Crossplatform(ThreadPriorityValue::try_from(49u8).unwrap()),
+            ThreadSchedulePolicy::Realtime(RealtimeThreadSchedulePolicy::Fifo),
+        )
+        .unwrap_or_else(|_| {
+            log::warn!(
+                "Could not set realtime thread priority. Are the PREEMPT_RT patches in use?"
+            );
+
+            thread_priority::set_current_thread_priority(
+                thread_priority::ThreadPriority::Crossplatform(
+                    thread_priority::ThreadPriorityValue::try_from(48u8).unwrap(),
+                ),
+            )
+            .expect("Failed to set thread priority at all!");
+            ()
+        })
+    }
 
     smol::block_on(async {
         let mut group = maindevice
@@ -95,93 +116,16 @@ fn main() -> Result<(), Error> {
 
         for mut subdevice in group.iter_mut(&maindevice) {
             if subdevice.name() == "AX5203-0000-0216" {
-                let tick_micros: u16 = TICK_INTERVAL.as_micros().try_into().unwrap();
-                let device_num = subdevice.configured_address();
-
-                // Configure the SoE equivalent of RxPDO and TxPDO,
-                // the Amplifier Telegram (AT) (Drive -> Controller)
-                // and Master Data Telegram (MDT) (Controller -> Drive)
-                // via their respective IDNs, S-0-0016 for AT and S-0-0024 for MDT
-                for drive in 0..=1 {
-                    // S-0-0135 (status word) already fixed
-                    let at_config: Vec<u16> = vec![4u16, 48u16, idn!(S, 0, 0051), idn!(S, 0, 0189)];
-                    let at_config_bytes: Vec<u8> =
-                        at_config.iter().flat_map(|&x| x.to_le_bytes()).collect();
-                    let at_config_slice: &[u8] = &at_config_bytes;
-
-                    log::info!(
-                        "Writing AT configuration for Device {:#06x}, Drive {}",
-                        device_num,
-                        drive
-                    );
-                    subdevice
-                        .idn_write_data(drive, idn!(S, 0, 0016), &at_config_slice)
-                        .await?;
-
-                    // S-0-0134 (control word) already fixed
-                    let mdt_config: Vec<u16> = vec![2u16, 48u16, idn!(S, 0, 0047)];
-                    let mdt_config_bytes: Vec<u8> =
-                        mdt_config.iter().flat_map(|&x| x.to_le_bytes()).collect();
-                    dbg!(&mdt_config_bytes);
-                    let mdt_config_slice: &[u8] = &mdt_config_bytes;
-
-                    log::info!(
-                        "Writing MDT configuration for Device {:#06x}, Drive {}",
-                        device_num,
-                        drive
-                    );
-                    subdevice
-                        .idn_write_data(drive, idn!(S, 0, 0024), &mdt_config_slice)
-                        .await?;
-                }
-
-                for drive in 0..=1 {
-                    log::info!(
-                        "Writing Feature flags for Device {:#06x}, Drive {}",
-                        device_num,
-                        drive
-                    );
-                    let feature_flags: u64 = 0xFE7FF90700000000u64.swap_bytes();
-                    subdevice
-                        .idn_write_data(drive, idn!(P, 0, 0010), feature_flags)
-                        .await?;
-                }
-
-                // Configure both drives of the AX5203
-                // Write tick period in microseconds to IDNs
-                // - S-0-0001 (Control unit cycle time (TNcyc))
-                // - S-0-0002 (Communication cycle time (tScyc))
-                log::info!("Writing TNcyc for Device {:#06x}, Drive {}", device_num, 0);
-                subdevice
-                    .idn_write_data(0, idn!(S, 0, 0001), tick_micros)
-                    .await?;
-                log::info!("Writing tScyc for Device {:#06x}, 0 {}", device_num, 0);
-                subdevice
-                    .idn_write_data(0, idn!(S, 0, 0002), tick_micros)
-                    .await?;
-
-                // Configure operation mode for each drive channel
-                for drive in 0..=1 {
-                    let mode: u16 = 11;
-                    log::info!("Writing {mode} to drive {drive}");
-                    subdevice
-                        .idn_write_data(drive, idn!(S, 0, 0032), mode)
-                        .await?;
-                }
-
-                // // Read all of the parameters which need to be configured before moving to SAFE-OP from IDN S-0-0018
-                // let (max_length, words) = subdevice
-                //     .idn_read_data_list(drive, idn!(S, 0, 0018))
-                //     .await?;
-                // log::info!("Max required list length: {max_length}");
-                // for word in words {
-                //     log::info!("Need to set {} before moving to SAFE-OP", idn_to_str(word));
-                // }
+                log::info!("Begin XML based configuration");
+                // Begin XML config
+                transition_ps(&subdevice).await?;
+                // End XML config
+                log::info!("End XML based configuration");
             }
 
             log::info!("Setting DC Sync0");
             subdevice.set_dc_sync(DcSync::Sync01 {
-                sync1_period: Duration::from_nanos(0),
+                sync1_period: Duration::from_micros(1750),
             });
         }
 
@@ -275,6 +219,7 @@ fn main() -> Result<(), Error> {
 
         log::info!("Alignment done");
 
+        log::info!("Configuring DC Sync for group...");
         // SubDevice clocks are aligned. We can turn DC on now.
         let group = group
             .configure_dc_sync(
@@ -283,36 +228,25 @@ fn main() -> Result<(), Error> {
                     // Start SYNC0 100ms in the future
                     start_delay: Duration::from_millis(100),
                     // SYNC0 period should be the same as the process data loop in most cases
-                    sync0_period: TICK_INTERVAL,
+                    sync0_period: Duration::from_micros(250),
                     // Send process data half way through cycle
                     sync0_shift: TICK_INTERVAL / 2,
                 },
             )
             .await?;
 
+        for subdevice in group.iter(&maindevice) {
+            subdevice
+                .register_write(RegisterAddress::DcCyclicUnitControl, 0x30u8)
+                .await?;
+        }
+        log::info!("DC Sync configured for group.");
+
+        log::info!("Requesting transition to SAFE-OP...");
         let group = group
             .into_safe_op(&maindevice)
             .await
             .expect("PRE-OP -> SAFE-OP");
-        // group.attempt_transition_to(&maindevice, SafeOp).await?;
-
-        // std::thread::sleep(Duration::from_secs(1));
-
-        // for subdevice in group.iter(&maindevice) {
-        //     for drive in 0..=1 {
-        //         let (_, indices) = subdevice
-        //             .idn_read_data_list(drive, idn!(S, 0, 0021))
-        //             .await?;
-
-        //         dbg!(&indices);
-        //         for idn_index in indices {
-        //             log::info!("Still need to set {}", idn_to_str(idn_index));
-        //         }
-
-        //         let primary_mode = subdevice.idn_read_data::<u16>(drive, 32u16).await?;
-        //         log::info!("{primary_mode}");
-        //     }
-        // }
 
         log::info!("SAFE-OP");
 
@@ -358,83 +292,74 @@ fn main() -> Result<(), Error> {
         signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term))
             .expect("Register hook");
 
-        let mut print_tick = Instant::now();
+        let mut start = Instant::now();
+
+        let mut control_word: u16 = 0;
+        let mut position_command: i32 = group
+            .subdevice(&maindevice, 0)?
+            .idn_read_data(0, idn!(S, 0, 0051))
+            .await?;
 
         // Main application process data cycle
         loop {
             let now = Instant::now();
 
-            let response @ TxRxResponse {
-                working_counter: _wkc,
-                extra:
-                    CycleInfo {
-                        dc_system_time: _,
-                        next_cycle_wait,
-                        cycle_start_offset,
-                    },
-                ..
-            } = group.tx_rx_dc(&maindevice).await.expect("TX/RX");
-
-            // Debug logging
-            {
-                let cycle_start_offset = cycle_start_offset.as_nanos() as u64;
-
-                let should_print = print_tick.elapsed() > Duration::from_secs(1);
-
-                if should_print {
-                    print_tick = Instant::now();
-
-                    log::info!(
-                        "Offset from start of cycle {} ({:0.2} ms), next tick in {:0.3} ms, group status {:?}",
-                        cycle_start_offset,
-                        (cycle_start_offset as f32) / 1000.0 / 1000.0,
-                        (next_cycle_wait.as_nanos() as f32) / 1000.0 / 1000.0,
-                        response.group_state()
-                    );
-                }
-
-                for sd in group.iter(&maindevice) {
-                    if matches!(sd.dc_support(), ethercrab::DcSupport::RefOnly) {
-                        continue;
-                    }
-
-                    let next_dc_sync_start_time = sd
-                        .register_read::<u32>(RegisterAddress::DcSyncStartTime)
-                        .await
-                        .unwrap_or_default();
-
-                    let sd_time_64 = sd
-                        .register_read::<u64>(RegisterAddress::DcSystemTime)
-                        .await?;
-                    let sd_time_32 = sd_time_64 as u32;
-
-                    let next_sync0 = (next_dc_sync_start_time - sd_time_32) as f64 / 1_000_000.;
-
-                    if should_print {
-                        log::info!(
-                            "{:#06x}, next sync0 in: {} ms, 32b t {}, {}, 64b t {}",
-                            sd.configured_address(),
-                            next_sync0,
-                            sd_time_32,
-                            next_dc_sync_start_time,
-                            sd_time_64,
-                        );
-                    }
-                }
-            }
+            group.tx_rx_dc(&maindevice).await.expect("TX/RX");
 
             for subdevice in group.iter(&maindevice) {
-                let mut o = subdevice.outputs_raw_mut();
+                if position_command == 0 {
+                    control_word = 0;
+                } else {
+                    control_word = 0b11100000_00000000;
+                }
+                // position_command += 1;
 
-                
+                {
+                    let inputs = subdevice.inputs_raw();
+                    // AT structure is
+                    // Bytes 0-1:   u16, status word
+                    // Bytes 2-5:   i32, position feedback
+                    // Bytes 6-9:   i32, following distance
+                    // Bytes 10-11: i16, torque feedback
+                    let status_word: u16 = u16::from_le_bytes(inputs[0..=1].try_into().unwrap());
+                    let position_feedback: i32 =
+                        i32::from_le_bytes(inputs[2..=5].try_into().unwrap());
+                    let following_distance: i32 =
+                        i32::from_le_bytes(inputs[6..=9].try_into().unwrap());
+                    // let torque_feedback: i16 =
+                    //     i16::from_le_bytes(inputs[10..=11].try_into().unwrap());
+
+                    if status_word & 0b00000000_00001000 != 0 {
+                        position_command += 200 * 8;
+                    }
+
+                    // log::info!(
+                    //     "{status_word:0b}: {position_feedback}\t {following_distance}" //\t {torque_feedback}"
+                    // )
+                }
+
+                {
+                    // MDT structure is:
+                    // Bytes 0-1: u16, control word
+                    // Bytes 2-5: i32, position command
+                    let mut o = subdevice.outputs_raw_mut();
+
+                    o[0..2].copy_from_slice(&control_word.to_le_bytes());
+                    o[2..6].copy_from_slice(&position_command.to_le_bytes());
+                }
             }
 
-            smol::Timer::at(now + next_cycle_wait).await;
+            // subdevice
+            //     .write(RegisterAddress::DcCyclicUnitControl)
+            //     .send(maindevice, 0x30)
+            //     .await?;
+
+            // smol::Timer::at(now + next_cycle_wait).await;
+            tick_interval.next().await;
 
             // Hook signal so we can write CSV data before exiting
             if term.load(Ordering::Relaxed) {
                 log::info!("Exiting...");
-
                 break;
             }
         }
@@ -459,4 +384,748 @@ fn main() -> Result<(), Error> {
 
         Ok(())
     })
+}
+
+pub async fn transition_ps(
+    subdevice: &ethercrab::SubDeviceRef<'_, &mut ethercrab::SubDevice>,
+) -> Result<(), Error> {
+    //Feature flags
+    subdevice
+        .idn_write_data(
+            0,
+            32778u16,
+            [
+                0xffu8, 0xffu8, 0xf9u8, 0x07u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Feature flags
+    subdevice
+        .idn_write_data(
+            1,
+            32778u16,
+            [
+                0xffu8, 0xffu8, 0xf9u8, 0x07u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Telegram type
+    subdevice.idn_write_data(0, 15u16, [0x07u8, 0x00u8]).await?;
+    // //AT list
+    // subdevice
+    //     .idn_write_data(
+    //         0,
+    //         16u16,
+    //         [
+    //             0x06u8, 0x00u8, 0x06u8, 0x00u8, 0x33u8, 0x00u8, 0xbdu8, 0x00u8, 0x54u8, 0x00u8,
+    //         ],
+    //     )
+    //     .await?;
+    //AT list
+    subdevice
+        .idn_write_data(
+            0,
+            16u16,
+            [
+                0x04u8, 0x00u8, 0x04u8, 0x00u8, 0x33u8, 0x00u8, 0xbdu8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Telegram type
+    subdevice.idn_write_data(1, 15u16, [0x07u8, 0x00u8]).await?;
+    // //AT list
+    // subdevice
+    //     .idn_write_data(
+    //         1,
+    //         16u16,
+    //         [
+    //             0x06u8, 0x00u8, 0x06u8, 0x00u8, 0x33u8, 0x00u8, 0xbdu8, 0x00u8, 0x54u8, 0x00u8,
+    //         ],
+    //     )
+    //     .await?;
+    //AT list
+    subdevice
+        .idn_write_data(
+            1,
+            16u16,
+            [
+                0x04u8, 0x00u8, 0x04u8, 0x00u8, 0x33u8, 0x00u8, 0xbdu8, 0x00u8,
+            ],
+        )
+        .await?;
+    //MDT list
+    subdevice
+        .idn_write_data(0, 24u16, [0x02u8, 0x00u8, 0x02u8, 0x00u8, 0x2fu8, 0x00u8])
+        .await?;
+    //MDT list
+    subdevice
+        .idn_write_data(1, 24u16, [0x02u8, 0x00u8, 0x02u8, 0x00u8, 0x2fu8, 0x00u8])
+        .await?;
+    //Tncyc - NC cycle time
+    subdevice.idn_write_data(0, 1u16, [0xd0u8, 0x07u8]).await?;
+    //Tscyc - Comm cycle time
+    subdevice.idn_write_data(0, 2u16, [0xd0u8, 0x07u8]).await?;
+    //Power management control word
+    subdevice
+        .idn_write_data(0, 32972u16, [0x09u8, 0x08u8])
+        .await?;
+    //Nominal mains voltage
+    subdevice
+        .idn_write_data(0, 32969u16, 2080u16) //[0xd0u8, 0x07u8])
+        .await?;
+    //Mains voltage negative tolerance range
+    subdevice
+        .idn_write_data(0, 32971u16, [0x64u8, 0x00u8])
+        .await?;
+    //Mains voltage positive tolerance range
+    subdevice
+        .idn_write_data(0, 32970u16, [0x64u8, 0x00u8])
+        .await?;
+    //Max DC link voltage
+    subdevice
+        .idn_write_data(0, 32984u16, [0x2eu8, 0x22u8])
+        .await?;
+    //Operation mode
+    subdevice.idn_write_data(0, 32u16, [0x0bu8, 0x00u8]).await?;
+    //Configured motor type
+    subdevice
+        .idn_write_data(
+            0,
+            32821u16,
+            [
+                0x0cu8, 0x00u8, 0x1eu8, 0x00u8, 0x41u8, 0x4du8, 0x38u8, 0x30u8, 0x35u8, 0x31u8,
+                0x2du8, 0x78u8, 0x45u8, 0x78u8, 0x31u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Number of pole pairs
+    subdevice
+        .idn_write_data(0, 32819u16, [0x04u8, 0x00u8])
+        .await?;
+    //Mechanical motor data
+    subdevice
+        .idn_write_data(
+            0,
+            32839u16,
+            [
+                0x08u8, 0x00u8, 0x08u8, 0x00u8, 0x22u8, 0x01u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Electrical commutation offset
+    subdevice
+        .idn_write_data(0, 32825u16, [0x78u8, 0x69u8])
+        .await?;
+    //Motor continuous stall current
+    subdevice
+        .idn_write_data(0, 111u16, [0x8cu8, 0x0au8, 0x00u8, 0x00u8])
+        .await?;
+    //Motor rated current
+    subdevice
+        .idn_write_data(0, 196u16, [0xf6u8, 0x09u8, 0x00u8, 0x00u8])
+        .await?;
+    //Motor peak current
+    subdevice
+        .idn_write_data(0, 109u16, [0x44u8, 0x2fu8, 0x00u8, 0x00u8])
+        .await?;
+    //Motor rated voltage
+    subdevice
+        .idn_write_data(0, 32845u16, [0xa0u8, 0x0fu8])
+        .await?;
+    //Motor winding: Dielectric strength
+    subdevice
+        .idn_write_data(0, 32835u16, [0xc4u8, 0x22u8])
+        .await?;
+    //Electric motor model
+    subdevice
+        .idn_write_data(
+            0,
+            32834u16,
+            [
+                0x08u8, 0x00u8, 0x08u8, 0x00u8, 0x74u8, 0x04u8, 0x00u8, 0x00u8, 0xaeu8, 0x10u8,
+                0x00u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Motor warning temperature
+    subdevice
+        .idn_write_data(0, 201u16, [0xb0u8, 0x04u8])
+        .await?;
+    //Motor shut down temperature
+    subdevice
+        .idn_write_data(0, 204u16, [0x78u8, 0x05u8])
+        .await?;
+    //Motor EMF
+    subdevice
+        .idn_write_data(0, 32823u16, [0xe2u8, 0x04u8])
+        .await?;
+    //Thermal motor model
+    subdevice
+        .idn_write_data(
+            0,
+            32830u16,
+            [
+                0x10u8, 0x00u8, 0x10u8, 0x00u8, 0x44u8, 0x07u8, 0x50u8, 0x00u8, 0x64u8, 0x00u8,
+                0x01u8, 0x00u8, 0x6bu8, 0x00u8, 0x19u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Motor peak torque
+    subdevice
+        .idn_write_data(0, 32841u16, [0xeau8, 0x06u8, 0x00u8, 0x00u8])
+        .await?;
+    //Motor inductance characteristic
+    subdevice
+        .idn_write_data(
+            0,
+            32843u16,
+            [
+                0x50u8, 0x00u8, 0x50u8, 0x00u8, 0xbau8, 0x04u8, 0x00u8, 0x00u8, 0x74u8, 0x09u8,
+                0x00u8, 0x00u8, 0x2eu8, 0x0eu8, 0x00u8, 0x00u8, 0xe8u8, 0x12u8, 0x00u8, 0x00u8,
+                0xa2u8, 0x17u8, 0x00u8, 0x00u8, 0x5cu8, 0x1cu8, 0x00u8, 0x00u8, 0x16u8, 0x21u8,
+                0x00u8, 0x00u8, 0xd0u8, 0x25u8, 0x00u8, 0x00u8, 0x94u8, 0x2au8, 0x00u8, 0x00u8,
+                0x44u8, 0x2fu8, 0x00u8, 0x00u8, 0x54u8, 0x10u8, 0x00u8, 0x00u8, 0xbeu8, 0x0fu8,
+                0x00u8, 0x00u8, 0xd8u8, 0x0eu8, 0x00u8, 0x00u8, 0xfcu8, 0x0du8, 0x00u8, 0x00u8,
+                0xf8u8, 0x0cu8, 0x00u8, 0x00u8, 0x5eu8, 0x0bu8, 0x00u8, 0x00u8, 0x56u8, 0x09u8,
+                0x00u8, 0x00u8, 0xb2u8, 0x07u8, 0x00u8, 0x00u8, 0x0eu8, 0x06u8, 0x00u8, 0x00u8,
+                0x6au8, 0x04u8, 0x00u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Motor torque/force characteristic
+    subdevice
+        .idn_write_data(
+            0,
+            32842u16,
+            [
+                0x50u8, 0x00u8, 0x50u8, 0x00u8, 0xbau8, 0x04u8, 0x00u8, 0x00u8, 0x74u8, 0x09u8,
+                0x00u8, 0x00u8, 0x2eu8, 0x0eu8, 0x00u8, 0x00u8, 0xe8u8, 0x12u8, 0x00u8, 0x00u8,
+                0xa2u8, 0x17u8, 0x00u8, 0x00u8, 0x5cu8, 0x1cu8, 0x00u8, 0x00u8, 0x16u8, 0x21u8,
+                0x00u8, 0x00u8, 0xd0u8, 0x25u8, 0x00u8, 0x00u8, 0x94u8, 0x2au8, 0x00u8, 0x00u8,
+                0x44u8, 0x2fu8, 0x00u8, 0x00u8, 0x02u8, 0x01u8, 0x00u8, 0x00u8, 0xf3u8, 0x01u8,
+                0x00u8, 0x00u8, 0xd1u8, 0x02u8, 0x00u8, 0x00u8, 0x9du8, 0x03u8, 0x00u8, 0x00u8,
+                0x56u8, 0x04u8, 0x00u8, 0x00u8, 0x00u8, 0x05u8, 0x00u8, 0x00u8, 0x96u8, 0x05u8,
+                0x00u8, 0x00u8, 0x18u8, 0x06u8, 0x00u8, 0x00u8, 0x90u8, 0x06u8, 0x00u8, 0x00u8,
+                0xeau8, 0x06u8, 0x00u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Motor temperature sensor characteristic
+    subdevice
+        .idn_write_data(
+            0,
+            32844u16,
+            [
+                0x28u8, 0x00u8, 0x28u8, 0x00u8, 0x70u8, 0xfeu8, 0x65u8, 0xffu8, 0x5au8, 0x00u8,
+                0x4fu8, 0x01u8, 0x44u8, 0x02u8, 0x39u8, 0x03u8, 0x2eu8, 0x04u8, 0x28u8, 0x05u8,
+                0x18u8, 0x06u8, 0x12u8, 0x07u8, 0x67u8, 0x01u8, 0xb8u8, 0x01u8, 0x16u8, 0x02u8,
+                0x82u8, 0x02u8, 0xfau8, 0x02u8, 0x80u8, 0x03u8, 0x13u8, 0x04u8, 0xb4u8, 0x04u8,
+                0x61u8, 0x05u8, 0x18u8, 0x06u8,
+            ],
+        )
+        .await?;
+    //Motor brake
+    subdevice
+        .idn_write_data(0, 32828u16, [0x01u8, 0x00u8])
+        .await?;
+    //Drive on delay time
+    subdevice
+        .idn_write_data(0, 206u16, [0x50u8, 0x00u8])
+        .await?;
+    //Drive off delay time
+    subdevice
+        .idn_write_data(0, 207u16, [0x28u8, 0x00u8])
+        .await?;
+    //Motor brake current monitoring level
+    subdevice
+        .idn_write_data(0, 32827u16, [0x0eu8, 0x01u8])
+        .await?;
+    //Motor brake data
+    subdevice
+        .idn_write_data(
+            0,
+            32840u16,
+            [
+                0x06u8, 0x00u8, 0x06u8, 0x00u8, 0x84u8, 0x03u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Motor continuous stall torque
+    subdevice
+        .idn_write_data(0, 32838u16, [0xe1u8, 0x01u8, 0x00u8, 0x00u8])
+        .await?;
+    //Maximum motor speed
+    subdevice
+        .idn_write_data(0, 113u16, [0x28u8, 0x23u8, 0x00u8, 0x00u8])
+        .await?;
+    //Bipolar velocity limit value
+    subdevice
+        .idn_write_data(0, 91u16, [0x52u8, 0xb8u8, 0x1eu8, 0x09u8])
+        .await?;
+    //Motor construction type
+    subdevice
+        .idn_write_data(0, 32818u16, [0x00u8, 0x00u8])
+        .await?;
+    //Motor data constraints
+    subdevice
+        .idn_write_data(
+            0,
+            32857u16,
+            [
+                0x24u8, 0x00u8, 0x24u8, 0x00u8, 0x26u8, 0x83u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x40u8, 0x1fu8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Configured drive type
+    subdevice
+        .idn_write_data(
+            0,
+            32822u16,
+            [
+                0x10u8, 0x00u8, 0x1eu8, 0x00u8, 0x41u8, 0x58u8, 0x35u8, 0x32u8, 0x30u8, 0x33u8,
+                0x2du8, 0x30u8, 0x30u8, 0x30u8, 0x30u8, 0x2du8, 0x23u8, 0x23u8, 0x23u8, 0x23u8,
+            ],
+        )
+        .await?;
+    //Configured channel current
+    subdevice
+        .idn_write_data(0, 32861u16, [0x8cu8, 0x0au8, 0x00u8, 0x00u8])
+        .await?;
+    //Configured channel peak current
+    subdevice
+        .idn_write_data(0, 32860u16, [0x18u8, 0x15u8, 0x00u8, 0x00u8])
+        .await?;
+    //Time limitation for peak current
+    subdevice
+        .idn_write_data(0, 32820u16, [0x00u8, 0x00u8])
+        .await?;
+    //Current controller settings 2
+    subdevice
+        .idn_write_data(0, 33219u16, [0x00u8, 0x00u8])
+        .await?;
+    //Current loop proportional gain 1
+    subdevice
+        .idn_write_data(0, 106u16, [0x01u8, 0x05u8])
+        .await?;
+    //Current control loop integral action time 1
+    subdevice
+        .idn_write_data(0, 107u16, [0x08u8, 0x00u8])
+        .await?;
+    //Velocity filter 1: Low pass time constant
+    subdevice
+        .idn_write_data(0, 33279u16, [0x96u8, 0x00u8])
+        .await?;
+    //Velocity loop proportional gain
+    subdevice
+        .idn_write_data(0, 100u16, [0x88u8, 0x00u8, 0x00u8, 0x00u8])
+        .await?;
+    //Velocity loop integral action time
+    subdevice
+        .idn_write_data(0, 101u16, [0x50u8, 0x00u8])
+        .await?;
+    //Feedback 1 type
+    subdevice
+        .idn_write_data(
+            0,
+            32918u16,
+            [
+                0xe0u8, 0x00u8, 0xe0u8, 0x00u8, 0x03u8, 0x00u8, 0x00u8, 0x00u8, 0x53u8, 0x69u8,
+                0x63u8, 0x6bu8, 0x23u8, 0x45u8, 0x44u8, 0x4du8, 0x33u8, 0x35u8, 0x2du8, 0x32u8,
+                0x4bu8, 0x46u8, 0x30u8, 0x41u8, 0x30u8, 0x32u8, 0x34u8, 0x41u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x0eu8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x05u8, 0x00u8, 0x0eu8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0xe8u8, 0x03u8, 0x00u8, 0x00u8,
+                0xe8u8, 0x03u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x07u8, 0x00u8,
+                0x0eu8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x18u8, 0x00u8, 0x0cu8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x02u8, 0x00u8, 0x02u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x96u8, 0x00u8, 0x96u8, 0x00u8, 0x73u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Velocity observer
+    subdevice
+        .idn_write_data(
+            0,
+            33282u16,
+            [
+                0x0cu8, 0x00u8, 0x0cu8, 0x00u8, 0x01u8, 0x00u8, 0x00u8, 0x00u8, 0xf4u8, 0x01u8,
+                0xe8u8, 0x03u8, 0xbcu8, 0x02u8, 0x00u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Motor temperature sensor type
+    subdevice
+        .idn_write_data(0, 32829u16, [0x07u8, 0x00u8])
+        .await?;
+    //Operation mode
+    subdevice.idn_write_data(1, 32u16, [0x0bu8, 0x00u8]).await?;
+    //Configured motor type
+    subdevice
+        .idn_write_data(
+            1,
+            32821u16,
+            [
+                0x0cu8, 0x00u8, 0x1eu8, 0x00u8, 0x41u8, 0x4du8, 0x38u8, 0x30u8, 0x35u8, 0x31u8,
+                0x2du8, 0x78u8, 0x45u8, 0x78u8, 0x31u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Number of pole pairs
+    subdevice
+        .idn_write_data(1, 32819u16, [0x04u8, 0x00u8])
+        .await?;
+    //Mechanical motor data
+    subdevice
+        .idn_write_data(
+            1,
+            32839u16,
+            [
+                0x08u8, 0x00u8, 0x08u8, 0x00u8, 0x23u8, 0x01u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Motor continuous stall current
+    subdevice
+        .idn_write_data(1, 111u16, [0x8cu8, 0x0au8, 0x00u8, 0x00u8])
+        .await?;
+    //Motor rated current
+    subdevice
+        .idn_write_data(1, 196u16, [0xf6u8, 0x09u8, 0x00u8, 0x00u8])
+        .await?;
+    //Motor peak current
+    subdevice
+        .idn_write_data(1, 109u16, [0x44u8, 0x2fu8, 0x00u8, 0x00u8])
+        .await?;
+    //Motor rated voltage
+    subdevice
+        .idn_write_data(1, 32845u16, [0xa0u8, 0x0fu8])
+        .await?;
+    //Motor winding: Dielectric strength
+    subdevice
+        .idn_write_data(1, 32835u16, [0xc4u8, 0x22u8])
+        .await?;
+    //Electric motor model
+    subdevice
+        .idn_write_data(
+            1,
+            32834u16,
+            [
+                0x08u8, 0x00u8, 0x08u8, 0x00u8, 0x74u8, 0x04u8, 0x00u8, 0x00u8, 0xaeu8, 0x10u8,
+                0x00u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Motor warning temperature
+    subdevice
+        .idn_write_data(1, 201u16, [0xb0u8, 0x04u8])
+        .await?;
+    //Motor shut down temperature
+    subdevice
+        .idn_write_data(1, 204u16, [0x78u8, 0x05u8])
+        .await?;
+    //Motor EMF
+    subdevice
+        .idn_write_data(1, 32823u16, [0xe2u8, 0x04u8])
+        .await?;
+    //Thermal motor model
+    subdevice
+        .idn_write_data(
+            1,
+            32830u16,
+            [
+                0x10u8, 0x00u8, 0x10u8, 0x00u8, 0x44u8, 0x07u8, 0x50u8, 0x00u8, 0x64u8, 0x00u8,
+                0x01u8, 0x00u8, 0x6bu8, 0x00u8, 0x19u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Motor peak torque
+    subdevice
+        .idn_write_data(1, 32841u16, [0xeau8, 0x06u8, 0x00u8, 0x00u8])
+        .await?;
+    //Motor inductance characteristic
+    subdevice
+        .idn_write_data(
+            1,
+            32843u16,
+            [
+                0x50u8, 0x00u8, 0x50u8, 0x00u8, 0xbau8, 0x04u8, 0x00u8, 0x00u8, 0x74u8, 0x09u8,
+                0x00u8, 0x00u8, 0x2eu8, 0x0eu8, 0x00u8, 0x00u8, 0xe8u8, 0x12u8, 0x00u8, 0x00u8,
+                0xa2u8, 0x17u8, 0x00u8, 0x00u8, 0x5cu8, 0x1cu8, 0x00u8, 0x00u8, 0x16u8, 0x21u8,
+                0x00u8, 0x00u8, 0xd0u8, 0x25u8, 0x00u8, 0x00u8, 0x8au8, 0x2au8, 0x00u8, 0x00u8,
+                0x44u8, 0x2fu8, 0x00u8, 0x00u8, 0x54u8, 0x10u8, 0x00u8, 0x00u8, 0xbeu8, 0x0fu8,
+                0x00u8, 0x00u8, 0xd8u8, 0x0eu8, 0x00u8, 0x00u8, 0xfcu8, 0x0du8, 0x00u8, 0x00u8,
+                0xf8u8, 0x0cu8, 0x00u8, 0x00u8, 0x5eu8, 0x0bu8, 0x00u8, 0x00u8, 0x56u8, 0x09u8,
+                0x00u8, 0x00u8, 0xb2u8, 0x07u8, 0x00u8, 0x00u8, 0x0eu8, 0x06u8, 0x00u8, 0x00u8,
+                0x6au8, 0x04u8, 0x00u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Motor torque/force characteristic
+    subdevice
+        .idn_write_data(
+            1,
+            32842u16,
+            [
+                0x50u8, 0x00u8, 0x50u8, 0x00u8, 0xbau8, 0x04u8, 0x00u8, 0x00u8, 0x74u8, 0x09u8,
+                0x00u8, 0x00u8, 0x2eu8, 0x0eu8, 0x00u8, 0x00u8, 0xe8u8, 0x12u8, 0x00u8, 0x00u8,
+                0xa2u8, 0x17u8, 0x00u8, 0x00u8, 0x5cu8, 0x1cu8, 0x00u8, 0x00u8, 0x16u8, 0x21u8,
+                0x00u8, 0x00u8, 0xd0u8, 0x25u8, 0x00u8, 0x00u8, 0x8au8, 0x2au8, 0x00u8, 0x00u8,
+                0x44u8, 0x2fu8, 0x00u8, 0x00u8, 0x02u8, 0x01u8, 0x00u8, 0x00u8, 0xf3u8, 0x01u8,
+                0x00u8, 0x00u8, 0xd1u8, 0x02u8, 0x00u8, 0x00u8, 0x9du8, 0x03u8, 0x00u8, 0x00u8,
+                0x57u8, 0x04u8, 0x00u8, 0x00u8, 0x00u8, 0x05u8, 0x00u8, 0x00u8, 0x96u8, 0x05u8,
+                0x00u8, 0x00u8, 0x1bu8, 0x06u8, 0x00u8, 0x00u8, 0x8du8, 0x06u8, 0x00u8, 0x00u8,
+                0xeau8, 0x06u8, 0x00u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Motor temperature sensor characteristic
+    subdevice
+        .idn_write_data(
+            1,
+            32844u16,
+            [
+                0x28u8, 0x00u8, 0x28u8, 0x00u8, 0x70u8, 0xfeu8, 0x65u8, 0xffu8, 0x5au8, 0x00u8,
+                0x4fu8, 0x01u8, 0x44u8, 0x02u8, 0x39u8, 0x03u8, 0x2eu8, 0x04u8, 0x23u8, 0x05u8,
+                0x18u8, 0x06u8, 0x12u8, 0x07u8, 0x67u8, 0x01u8, 0xb8u8, 0x01u8, 0x16u8, 0x02u8,
+                0x82u8, 0x02u8, 0xfau8, 0x02u8, 0x80u8, 0x03u8, 0x13u8, 0x04u8, 0xb4u8, 0x04u8,
+                0x61u8, 0x05u8, 0x18u8, 0x06u8,
+            ],
+        )
+        .await?;
+    //Motor brake
+    subdevice
+        .idn_write_data(1, 32828u16, [0x01u8, 0x00u8])
+        .await?;
+    //Drive on delay time
+    subdevice
+        .idn_write_data(1, 206u16, [0x50u8, 0x00u8])
+        .await?;
+    //Drive off delay time
+    subdevice
+        .idn_write_data(1, 207u16, [0x28u8, 0x00u8])
+        .await?;
+    //Motor brake current monitoring level
+    subdevice
+        .idn_write_data(1, 32827u16, [0x0eu8, 0x01u8])
+        .await?;
+    //Motor brake data
+    subdevice
+        .idn_write_data(
+            1,
+            32840u16,
+            [
+                0x06u8, 0x00u8, 0x06u8, 0x00u8, 0x84u8, 0x03u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Electrical commutation offset
+    subdevice
+        .idn_write_data(1, 32825u16, [0x78u8, 0x69u8])
+        .await?;
+    //Motor continuous stall torque
+    subdevice
+        .idn_write_data(1, 32838u16, [0xe1u8, 0x01u8, 0x00u8, 0x00u8])
+        .await?;
+    //Maximum motor speed
+    subdevice
+        .idn_write_data(1, 113u16, [0x28u8, 0x23u8, 0x00u8, 0x00u8])
+        .await?;
+    //Bipolar velocity limit value
+    subdevice
+        .idn_write_data(1, 91u16, [0x52u8, 0xb8u8, 0x1eu8, 0x09u8])
+        .await?;
+    //Motor construction type
+    subdevice
+        .idn_write_data(1, 32818u16, [0x00u8, 0x00u8])
+        .await?;
+    //Motor data constraints
+    subdevice
+        .idn_write_data(
+            1,
+            32857u16,
+            [
+                0x24u8, 0x00u8, 0x24u8, 0x00u8, 0x26u8, 0x83u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x40u8, 0x1fu8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Configured drive type
+    subdevice
+        .idn_write_data(
+            1,
+            32822u16,
+            [
+                0x10u8, 0x00u8, 0x1eu8, 0x00u8, 0x41u8, 0x58u8, 0x35u8, 0x32u8, 0x30u8, 0x33u8,
+                0x2du8, 0x30u8, 0x30u8, 0x30u8, 0x30u8, 0x2du8, 0x23u8, 0x23u8, 0x23u8, 0x23u8,
+            ],
+        )
+        .await?;
+    //Configured channel current
+    subdevice
+        .idn_write_data(1, 32861u16, [0x8cu8, 0x0au8, 0x00u8, 0x00u8])
+        .await?;
+    //Configured channel peak current
+    subdevice
+        .idn_write_data(1, 32860u16, [0x18u8, 0x15u8, 0x00u8, 0x00u8])
+        .await?;
+    //Time limitation for peak current
+    subdevice
+        .idn_write_data(1, 32820u16, [0x00u8, 0x00u8])
+        .await?;
+    //Current controller settings 2
+    subdevice
+        .idn_write_data(1, 33219u16, [0x00u8, 0x00u8])
+        .await?;
+    //Current loop proportional gain 1
+    subdevice
+        .idn_write_data(1, 106u16, [0x01u8, 0x05u8])
+        .await?;
+    //Current control loop integral action time 1
+    subdevice
+        .idn_write_data(1, 107u16, [0x08u8, 0x00u8])
+        .await?;
+    //Velocity filter 1: Low pass time constant
+    subdevice
+        .idn_write_data(1, 33279u16, [0x96u8, 0x00u8])
+        .await?;
+    //Velocity loop proportional gain
+    subdevice
+        .idn_write_data(1, 100u16, [0x88u8, 0x00u8, 0x00u8, 0x00u8])
+        .await?;
+    //Velocity loop integral action time
+    subdevice
+        .idn_write_data(1, 101u16, [0x50u8, 0x00u8])
+        .await?;
+    //Feedback 1 type
+    subdevice
+        .idn_write_data(
+            1,
+            32918u16,
+            [
+                0xe0u8, 0x00u8, 0xe0u8, 0x00u8, 0x03u8, 0x00u8, 0x00u8, 0x00u8, 0x45u8, 0x44u8,
+                0x4du8, 0x33u8, 0x35u8, 0x2du8, 0x32u8, 0x4bu8, 0x46u8, 0x30u8, 0x41u8, 0x30u8,
+                0x53u8, 0x30u8, 0x33u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x18u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x05u8, 0x00u8, 0x18u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0xe8u8, 0x03u8, 0x00u8, 0x00u8,
+                0xe8u8, 0x03u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x07u8, 0x00u8,
+                0x18u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x18u8, 0x00u8, 0x0cu8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x02u8, 0x00u8, 0x02u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x96u8, 0x00u8, 0x00u8, 0x00u8, 0x7du8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+                0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Velocity observer
+    subdevice
+        .idn_write_data(
+            1,
+            33282u16,
+            [
+                0x0cu8, 0x00u8, 0x0cu8, 0x00u8, 0x01u8, 0x00u8, 0x00u8, 0x00u8, 0xf4u8, 0x01u8,
+                0xe8u8, 0x03u8, 0xbcu8, 0x02u8, 0x00u8, 0x00u8,
+            ],
+        )
+        .await?;
+    //Motor temperature sensor type
+    subdevice
+        .idn_write_data(1, 32829u16, [0x07u8, 0x00u8])
+        .await?;
+    // //set DC cycle time
+    // subdevice
+    //     .register_write(
+    //         0x09a0u16,
+    //         [
+    //             0x90u8, 0xd0u8, 0x03u8, 0x00u8, 0xf0u8, 0xb3u8, 0x1au8, 0x00u8,
+    //         ],
+    //     )
+    //     .await?;
+    // //set DC start time
+    // subdevice
+    //     .register_write(
+    //         0x0990u16,
+    //         [
+    //             0x90u8, 0xd0u8, 0x03u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
+    //         ],
+    //     )
+    //     .await?;
+    // //set DC activation
+    // subdevice
+    //     .register_write(0x0980u16, [0x30u8, 0x07u8])
+    //     .await?;
+    //set sm 2 (outputs)
+    // subdevice
+    //     .register_write(
+    //         0x0810u16,
+    //         [
+    //             0x00u8, 0x10u8, 0x0cu8, 0x00u8, 0x24u8, 0x00u8, 0x01u8, 0x00u8,
+    //         ],
+    //     )
+    //     .await?;
+    // //set sm 3 (inputs)
+    // subdevice
+    //     .register_write(
+    //         0x0818u16,
+    //         [
+    //             0x00u8, 0x11u8, 0x18u8, 0x00u8, 0x22u8, 0x00u8, 0x01u8, 0x00u8,
+    //         ],
+    //     )
+    //     .await?;
+    // //set fmmu 0 (outputs)
+    // subdevice
+    //     .register_write(
+    //         0x0600u16,
+    //         [
+    //             0x00u8, 0x00u8, 0x00u8, 0x01u8, 0x0cu8, 0x00u8, 0x00u8, 0x07u8, 0x00u8, 0x10u8,
+    //             0x00u8, 0x02u8, 0x01u8, 0x00u8, 0x00u8, 0x00u8,
+    //         ],
+    //     )
+    //     .await?;
+    // //set fmmu 1 (inputs)
+    // subdevice
+    //     .register_write(
+    //         0x0610u16,
+    //         [
+    //             0x00u8, 0x00u8, 0x00u8, 0x01u8, 0x18u8, 0x00u8, 0x00u8, 0x07u8, 0x00u8, 0x11u8,
+    //             0x00u8, 0x01u8, 0x01u8, 0x00u8, 0x00u8, 0x00u8,
+    //         ],
+    //     )
+    //     .await?;
+    // //set device state to SAFEOP
+    // subdevice
+    //     .register_write(0x0120u16, [0x04u8, 0x00u8])
+    //     .await?;
+    Ok(())
 }
