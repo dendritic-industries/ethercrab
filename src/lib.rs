@@ -240,17 +240,23 @@ pub fn idn_to_str(idn: u16) -> String {
 /// Macro that takes a SoE IDN, e.g. S-0-0051 and turns it into a 16-bit unsigned int
 #[macro_export]
 macro_rules! idn {
-    (S, $group:expr, $number:expr) => {{
-        const G: u16 = ($group & 0x07) << 12;
-        const N: u16 = $number & 0x0FFF;
-        G | N
-    }};
-    (P, $group:expr, $number:expr) => {{
-        const SET: u16 = 1 << 15;
-        const G: u16 = ($group & 0x07) << 12;
-        const N: u16 = $number & 0x0FFF;
-        SET | G | N
-    }};
+    (S, $group:expr, $number:expr) => {
+        #[allow(clippy::zero_prefixed_literal)]
+        {
+            const G: u16 = ($group & 0x07) << 12;
+            const N: u16 = $number & 0x0FFF;
+            G | N
+        }
+    };
+    (P, $group:expr, $number:expr) => {
+        #[allow(clippy::zero_prefixed_literal)]
+        {
+            const SET: u16 = 1 << 15;
+            const G: u16 = ($group & 0x07) << 12;
+            const N: u16 = $number & 0x0FFF;
+            SET | G | N
+        }
+    };
 }
 
 #[allow(unused)]

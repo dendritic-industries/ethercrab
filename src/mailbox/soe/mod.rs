@@ -123,7 +123,7 @@ where
             };
 
             let soe_header = SoeHeader {
-                opcode: opcode,
+                opcode,
                 fragmentation: SoeFragmentationFlag::IncompleteFrame,
                 error: SoeErrorFlag::NoError,
                 drive_num,
@@ -156,7 +156,7 @@ where
         };
 
         let soe_header = SoeHeader {
-            opcode: opcode,
+            opcode,
             fragmentation: SoeFragmentationFlag::CompleteTransmission,
             error: SoeErrorFlag::NoError,
             drive_num,

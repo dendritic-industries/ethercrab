@@ -1,7 +1,11 @@
-//! Configure Distributed Clocks (DC) for EK1100 and a couple of other modules.
+//! Demonstrate slowly spinning an AM8051-0EH1-0000 motor with an AX5203 drive.
 //!
-//! Please note this example uses experimental features and should not be used as a reference for
-//! other code. It is here (currently) primarily to help develop EtherCrab.
+//! Uses newly implemented SoE functionality, namely writing to IDNs (SoE equivalent of CoE SDOs),
+//! and SoE derived PDO setup.
+//!
+//! IMPORTANT: This examples uses a hard-coded function to initialize the IDNs for the motor, brake,
+//! and encoder type for this particular combination of hardware. If you intend to use this, you MUST
+//! modify / regenerate this startup list for your particular hardware combination!
 
 use env_logger::Env;
 use ethercrab::{
@@ -31,7 +35,6 @@ const PDI_LEN: usize = 128;
 
 static PDU_STORAGE: PduStorage<MAX_FRAMES, MAX_PDU_DATA> = PduStorage::new();
 
-// Can only be either 250us or 125us from ESI
 const TICK_INTERVAL: Duration = Duration::from_micros(2000);
 
 fn main() -> Result<(), Error> {
@@ -102,7 +105,6 @@ fn main() -> Result<(), Error> {
                 ),
             )
             .expect("Failed to set thread priority at all!");
-            ()
         })
     }
 
@@ -113,14 +115,13 @@ fn main() -> Result<(), Error> {
             .expect("Init");
 
         // The group will be in PRE-OP at this point
-
         for mut subdevice in group.iter_mut(&maindevice) {
             if subdevice.name() == "AX5203-0000-0216" {
-                log::info!("Begin XML based configuration");
+                log::info!("Begin IDN configuration");
                 // Begin XML config
                 transition_ps(&subdevice).await?;
                 // End XML config
-                log::info!("End XML based configuration");
+                log::info!("End IDN configuration");
             }
 
             log::info!("Setting DC Sync0");
@@ -209,7 +210,6 @@ fn main() -> Result<(), Error> {
                 // mentions less than 100us as a good enough value as well.
                 if max_deviation < 500 {
                     log::info!("Clocks settled after {} ms", start.elapsed().as_millis());
-
                     break;
                 }
             }
@@ -227,7 +227,8 @@ fn main() -> Result<(), Error> {
                 DcConfiguration {
                     // Start SYNC0 100ms in the future
                     start_delay: Duration::from_millis(100),
-                    // SYNC0 period should be the same as the process data loop in most cases
+                    // SYNC0 period differs from the process period here
+                    // since SYNC1 takes up the slack 1750 us (set previously)
                     sync0_period: Duration::from_micros(250),
                     // Send process data half way through cycle
                     sync0_shift: TICK_INTERVAL / 2,
@@ -236,9 +237,11 @@ fn main() -> Result<(), Error> {
             .await?;
 
         for subdevice in group.iter(&maindevice) {
-            subdevice
-                .register_write(RegisterAddress::DcCyclicUnitControl, 0x30u8)
-                .await?;
+            if subdevice.name() == "AX5203-0000-0216" {
+                subdevice
+                    .register_write(RegisterAddress::DcCyclicUnitControl, 0x30u8)
+                    .await?;
+            }
         }
         log::info!("DC Sync configured for group.");
 
@@ -292,67 +295,64 @@ fn main() -> Result<(), Error> {
         signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term))
             .expect("Register hook");
 
-        let mut start = Instant::now();
-
-        let mut control_word: u16 = 0;
+        // Initialize position command to the current position to prevent jumps
         let mut position_command: i32 = group
             .subdevice(&maindevice, 0)?
             .idn_read_data(0, idn!(S, 0, 0051))
             .await?;
+        let mut control_word: u16;
 
         // Main application process data cycle
         loop {
-            let now = Instant::now();
-
             group.tx_rx_dc(&maindevice).await.expect("TX/RX");
 
             for subdevice in group.iter(&maindevice) {
-                if position_command == 0 {
-                    control_word = 0;
-                } else {
-                    control_word = 0b11100000_00000000;
-                }
-                // position_command += 1;
-
-                {
-                    let inputs = subdevice.inputs_raw();
-                    // AT structure is
-                    // Bytes 0-1:   u16, status word
-                    // Bytes 2-5:   i32, position feedback
-                    // Bytes 6-9:   i32, following distance
-                    // Bytes 10-11: i16, torque feedback
-                    let status_word: u16 = u16::from_le_bytes(inputs[0..=1].try_into().unwrap());
-                    let position_feedback: i32 =
-                        i32::from_le_bytes(inputs[2..=5].try_into().unwrap());
-                    let following_distance: i32 =
-                        i32::from_le_bytes(inputs[6..=9].try_into().unwrap());
-                    // let torque_feedback: i16 =
-                    //     i16::from_le_bytes(inputs[10..=11].try_into().unwrap());
-
-                    if status_word & 0b00000000_00001000 != 0 {
-                        position_command += 200 * 8;
+                if subdevice.name() == "AX5203-0000-0216" {
+                    if position_command == 0 {
+                        control_word = 0;
+                    } else {
+                        // Bit 13 - Restart, Bit 14 - Enable, Bit 15 - Drive on
+                        control_word = 0b11100000_00000000;
                     }
 
-                    // log::info!(
-                    //     "{status_word:0b}: {position_feedback}\t {following_distance}" //\t {torque_feedback}"
-                    // )
-                }
+                    {
+                        // AT structure is
+                        // Bytes 0-1:   u16, status word (S-0-0135)
+                        // Bytes 2-5:   i32, position feedback (S-0-0051)
+                        // Bytes 6-9:   i32, following distance (S-0-0189)
+                        let inputs = subdevice.inputs_raw();
 
-                {
-                    // MDT structure is:
-                    // Bytes 0-1: u16, control word
-                    // Bytes 2-5: i32, position command
-                    let mut o = subdevice.outputs_raw_mut();
+                        let status_word: u16 =
+                            u16::from_le_bytes(inputs[0..=1].try_into().unwrap());
+                        let _position_feedback: i32 =
+                            i32::from_le_bytes(inputs[2..=5].try_into().unwrap());
+                        let _following_distance: i32 =
+                            i32::from_le_bytes(inputs[6..=9].try_into().unwrap());
 
-                    o[0..2].copy_from_slice(&control_word.to_le_bytes());
-                    o[2..6].copy_from_slice(&position_command.to_le_bytes());
+                        // Bit 3 - Drive observing values
+                        if status_word & 0b00000000_00001000 != 0 {
+                            // Tested on a motor in 20 bit encoder resolution with 8:1 gearbox
+                            // This will roughly result in a 6 rpm on the output shaft for this setup
+                            position_command += 200 * 8;
+                        }
+
+                        // // Leave this commented out to avoid jitter issues
+                        // log::info!(
+                        //     "{status_word:0b}: {position_feedback}\t {following_distance}" //\t {torque_feedback}"
+                        // )
+                    }
+
+                    {
+                        // MDT structure is:
+                        // Bytes 0-1: u16, control word (S-0-0134)
+                        // Bytes 2-5: i32, position command (S-0-0047)
+                        let mut o = subdevice.outputs_raw_mut();
+
+                        o[0..2].copy_from_slice(&control_word.to_le_bytes());
+                        o[2..6].copy_from_slice(&position_command.to_le_bytes());
+                    }
                 }
             }
-
-            // subdevice
-            //     .write(RegisterAddress::DcCyclicUnitControl)
-            //     .send(maindevice, 0x30)
-            //     .await?;
 
             // smol::Timer::at(now + next_cycle_wait).await;
             tick_interval.next().await;
@@ -386,6 +386,7 @@ fn main() -> Result<(), Error> {
     })
 }
 
+// Translated via a script from a TwinCAT startup list XML file -- values will vary by motor and encoder type!!!
 pub async fn transition_ps(
     subdevice: &ethercrab::SubDeviceRef<'_, &mut ethercrab::SubDevice>,
 ) -> Result<(), Error> {
@@ -1063,69 +1064,5 @@ pub async fn transition_ps(
     subdevice
         .idn_write_data(1, 32829u16, [0x07u8, 0x00u8])
         .await?;
-    // //set DC cycle time
-    // subdevice
-    //     .register_write(
-    //         0x09a0u16,
-    //         [
-    //             0x90u8, 0xd0u8, 0x03u8, 0x00u8, 0xf0u8, 0xb3u8, 0x1au8, 0x00u8,
-    //         ],
-    //     )
-    //     .await?;
-    // //set DC start time
-    // subdevice
-    //     .register_write(
-    //         0x0990u16,
-    //         [
-    //             0x90u8, 0xd0u8, 0x03u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8, 0x00u8,
-    //         ],
-    //     )
-    //     .await?;
-    // //set DC activation
-    // subdevice
-    //     .register_write(0x0980u16, [0x30u8, 0x07u8])
-    //     .await?;
-    //set sm 2 (outputs)
-    // subdevice
-    //     .register_write(
-    //         0x0810u16,
-    //         [
-    //             0x00u8, 0x10u8, 0x0cu8, 0x00u8, 0x24u8, 0x00u8, 0x01u8, 0x00u8,
-    //         ],
-    //     )
-    //     .await?;
-    // //set sm 3 (inputs)
-    // subdevice
-    //     .register_write(
-    //         0x0818u16,
-    //         [
-    //             0x00u8, 0x11u8, 0x18u8, 0x00u8, 0x22u8, 0x00u8, 0x01u8, 0x00u8,
-    //         ],
-    //     )
-    //     .await?;
-    // //set fmmu 0 (outputs)
-    // subdevice
-    //     .register_write(
-    //         0x0600u16,
-    //         [
-    //             0x00u8, 0x00u8, 0x00u8, 0x01u8, 0x0cu8, 0x00u8, 0x00u8, 0x07u8, 0x00u8, 0x10u8,
-    //             0x00u8, 0x02u8, 0x01u8, 0x00u8, 0x00u8, 0x00u8,
-    //         ],
-    //     )
-    //     .await?;
-    // //set fmmu 1 (inputs)
-    // subdevice
-    //     .register_write(
-    //         0x0610u16,
-    //         [
-    //             0x00u8, 0x00u8, 0x00u8, 0x01u8, 0x18u8, 0x00u8, 0x00u8, 0x07u8, 0x00u8, 0x11u8,
-    //             0x00u8, 0x01u8, 0x01u8, 0x00u8, 0x00u8, 0x00u8,
-    //         ],
-    //     )
-    //     .await?;
-    // //set device state to SAFEOP
-    // subdevice
-    //     .register_write(0x0120u16, [0x04u8, 0x00u8])
-    //     .await?;
     Ok(())
 }
