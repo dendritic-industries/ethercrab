@@ -1,10 +1,11 @@
 mod headers;
 
+use crate::idn_to_str;
 use crate::{
     SubDevice, SubDeviceRef,
     error::{
         Error::{self, SoeError},
-        PduError,
+        MailboxError, PduError,
     },
     fmt,
     mailbox::{
@@ -115,7 +116,8 @@ where
             // Send maximum data length packets until what we have can fit in a single packet
             let counter = self.subdevice.mailbox_counter();
             let mailbox_header = MailboxHeader {
-                length: 0x04u16 + max_data_len as u16, // SoE header (always 4 bytes) + payload
+                // SoE header (always 4 bytes) + payload
+                length: (SoeHeader::PACKED_LEN + max_data_len) as u16,
                 // address: 0x0000,
                 priority: Priority::Lowest,
                 mailbox_type: MailboxType::Soe,
@@ -148,7 +150,8 @@ where
 
         let counter = self.subdevice.mailbox_counter();
         let mailbox_header = MailboxHeader {
-            length: 0x04u16 + (data_len - data_sent) as u16, // SoE header (always 4 bytes) + payload
+            // SoE header (always 4 bytes) + payload
+            length: (SoeHeader::PACKED_LEN + (data_len - data_sent)) as u16,
             // address: 0x0000,
             priority: Priority::Lowest,
             mailbox_type: MailboxType::Soe,
@@ -177,7 +180,7 @@ where
             .with_len(write_mailbox.len)
             .send(
                 self.subdevice.maindevice,
-                &request[..(data_len - data_sent + total_header_len)], //..
+                &request[..(data_len - data_sent + total_header_len)],
             )
             .await?;
 
@@ -202,23 +205,20 @@ where
             }
         }
 
-        // TODO!
         // Validate that the mailbox response is to the request we just sent
-        if mailbox_header.mailbox_type != MailboxType::Soe
-        // || !request.validate_response(headers.address)
-        {
-            // fmt::error!(
-            //     "Invalid SDO response. Type: {:?} (expected {:?}), index {}, subindex {}",
-            //     headers.header.mailbox_type,
-            //     MailboxType::Soe,
-            //     headers.address,
-            // );
+        if mailbox_header.mailbox_type != MailboxType::Soe || soe_header.idn != idn_address {
+            fmt::error!(
+                "Invalid IDN response. Type: {:?} (expected {:?}), {} (expected {})",
+                mailbox_header.mailbox_type,
+                MailboxType::Soe,
+                idn_to_str(soe_header.idn),
+                idn_to_str(idn_address),
+            );
 
-            // Err(Error::Mailbox(MailboxError::SdoResponseInvalid {
-            //     address: headers.address,
-            // }))
+            return Err(Error::Mailbox(MailboxError::IdnResponseInvalid {
+                idn_address: idn_address,
+            }));
         }
-        // let headers = IdnHeader::unpack_from_slice(&response)?;
 
         Ok((
             mailbox_header.length as usize - SoeHeader::PACKED_LEN,
@@ -243,7 +243,7 @@ where
 
         T::unpack_from_slice(data).map_err(|_| {
             fmt::error!(
-                "SDO expedited data decode T: {}, data {:?} (len {})",
+                "IDN read decode T: {}, data {:?} (len {})",
                 type_name::<T>(),
                 data,
                 data.len(),
@@ -274,7 +274,7 @@ where
         Ok(str::from_utf8(data)
             .map_err(|_| {
                 fmt::error!(
-                    "SDO expedited data decode T: {} (len {}) data {:?} (len {})",
+                    "IDN read decode T: {} (len {}) data {:?} (len {})",
                     type_name::<String>(),
                     data.len(),
                     data,
@@ -306,7 +306,7 @@ where
 
         String::unpack_from_slice(data).map_err(|_| {
             fmt::error!(
-                "SDO expedited data decode T: {} (len {}) data {:?} (len {})",
+                "IDN read decode T: {} (len {}) data {:?} (len {})",
                 type_name::<String>(),
                 data.len(),
                 data,
@@ -366,7 +366,7 @@ where
             })
             .collect();
 
-        // let actual_length = data_words[0];
+        let _actual_length = data_words[0];
         let max_length = data_words[1];
 
         Ok((max_length, data_words[2..].to_vec()))

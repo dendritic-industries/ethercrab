@@ -1,5 +1,6 @@
 //! EtherCrab error types.
 
+use crate::idn_to_str;
 pub use crate::mailbox::coe::CoeAbortCode;
 use crate::{AlStatusCode, SubDeviceState, command::Command, fmt, mailbox::soe::SoeErrorCode};
 use core::num::TryFromIntError;
@@ -280,12 +281,17 @@ pub enum MailboxError {
     /// A SubDevice has no read (SubDevice OUT) mailbox, but requires one
     /// for a given action.
     NoWriteMailbox,
-    /// The response to a mailbox action is invalid.
+    /// The response to a CoE mailbox action is invalid.
     SdoResponseInvalid {
         /// The address used in the operation.
         address: u16,
         /// The subindex used in the operation.
         sub_index: u8,
+    },
+    /// The response to a SoE mailbox action is invalid.
+    IdnResponseInvalid {
+        /// The address used in the operation
+        idn_address: u16,
     },
     /// The returned counter value does not match that which was sent.
     ///
@@ -338,6 +344,11 @@ impl core::fmt::Display for MailboxError {
                 f,
                 "mailbox message of length {} is longer than mailbox size {}",
                 desired_size, mailbox_size
+            ),
+            MailboxError::IdnResponseInvalid { idn_address } => write!(
+                f,
+                "{} invalid response from device",
+                idn_to_str(*idn_address)
             ),
         }
     }
