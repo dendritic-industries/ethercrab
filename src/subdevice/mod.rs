@@ -15,7 +15,7 @@ use crate::{
     error::{Error, IgnoreNoCategory, MailboxError},
     fmt,
     mailbox::coe::{self, Coe, SdoExpeditedPayload, SubIndex},
-    mailbox::soe::Soe,
+    mailbox::soe::{Soe, headers::SoeAttributes},
     maindevice::MainDevice,
     pdu_loop::ReceivedPdu,
     register::{DcSupport, RegisterAddress, SupportFlags},
@@ -835,8 +835,12 @@ where
         Soe::new(self).idn_read_name(drive_num, idn_address).await
     }
 
-    /// Read the attribute word (u32) for the SoE IDN
-    pub async fn idn_read_attribute(&self, drive_num: u8, idn_address: u16) -> Result<u32, Error> {
+    /// Read the attribute word (SoeAttributes) for the SoE IDN
+    pub async fn idn_read_attribute(
+        &self,
+        drive_num: u8,
+        idn_address: u16,
+    ) -> Result<SoeAttributes, Error> {
         Soe::new(self)
             .idn_read_attribute(drive_num, idn_address)
             .await

@@ -1,6 +1,9 @@
-mod headers;
+pub mod error;
+pub mod headers;
 
 use crate::idn_to_str;
+use crate::mailbox::soe::error::SoeErrorCode;
+use crate::mailbox::soe::headers::SoeAttributes;
 use crate::{
     SubDevice, SubDeviceRef,
     error::{
@@ -22,46 +25,6 @@ pub(crate) use headers::{SoeHeader, SoeOpcode};
 
 pub struct Soe<'maindevice, S> {
     subdevice: &'maindevice SubDeviceRef<'maindevice, S>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u16)]
-pub enum SoeErrorCode {
-    Success = 0x0000,
-    IdnDoesNotExist = 0x0001,
-    InvalidIdnFormat = 0x0009,
-    ServiceNotSupported = 0x0010,
-    DataContainerTooSmall = 0x0011,
-    ElementDoesNotExist = 0x0020,
-    NameElementDoesNotExist = 0x0023,
-    ElementNotSupported = 0x0028,
-    WriteAccessProhibited = 0x1001,
-    WriteBlockedByPhase = 0x1002,
-    ValueOutsideLimits = 0x1009,
-    InvalidValue = 0x100A,
-    CommandExecutionError = 0x2001,
-    Unknown(u16),
-}
-
-impl From<u16> for SoeErrorCode {
-    fn from(code: u16) -> Self {
-        match code {
-            0x0000 => Self::Success,
-            0x0001 => Self::IdnDoesNotExist,
-            0x0009 => Self::InvalidIdnFormat,
-            0x0010 => Self::ServiceNotSupported,
-            0x0011 => Self::DataContainerTooSmall,
-            0x0020 => Self::ElementDoesNotExist,
-            0x0023 => Self::NameElementDoesNotExist,
-            0x0028 => Self::ElementNotSupported,
-            0x1001 => Self::WriteAccessProhibited,
-            0x1002 => Self::WriteBlockedByPhase,
-            0x1009 => Self::ValueOutsideLimits,
-            0x100A => Self::InvalidValue,
-            0x2001 => Self::CommandExecutionError,
-            other => Self::Unknown(other),
-        }
-    }
 }
 
 impl<'maindevice, S> Soe<'maindevice, S>
@@ -146,6 +109,20 @@ where
                 .await?;
 
             data_sent += max_data_len;
+
+            // Wait for mailboxes to become available again before proceeding
+            let (_, _) = self
+                .subdevice
+                .wait_for_mailboxes()
+                .await
+                .inspect_err(|err| {
+                    fmt::error!(
+                        "{} {} {}",
+                        self.subdevice.configured_address(),
+                        self.subdevice.name(),
+                        err
+                    )
+                })?;
         }
 
         let counter = self.subdevice.mailbox_counter();
@@ -286,8 +263,12 @@ where
             .to_owned())
     }
 
-    pub async fn idn_read_attribute(&self, drive_num: u8, idn_address: u16) -> Result<u32, Error> {
-        self.idn_read_element::<u32>(drive_num, idn_address, SoeElementFlag::Attribute)
+    pub async fn idn_read_attribute(
+        &self,
+        drive_num: u8,
+        idn_address: u16,
+    ) -> Result<SoeAttributes, Error> {
+        self.idn_read_element::<SoeAttributes>(drive_num, idn_address, SoeElementFlag::Attribute)
             .await
     }
 

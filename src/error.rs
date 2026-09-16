@@ -2,7 +2,9 @@
 
 use crate::idn_to_str;
 pub use crate::mailbox::coe::CoeAbortCode;
-use crate::{AlStatusCode, SubDeviceState, command::Command, fmt, mailbox::soe::SoeErrorCode};
+use crate::{
+    AlStatusCode, SubDeviceState, command::Command, fmt, mailbox::soe::error::SoeErrorCode,
+};
 use core::num::TryFromIntError;
 
 /// An EtherCrab error.
