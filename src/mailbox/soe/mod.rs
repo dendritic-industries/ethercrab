@@ -193,7 +193,7 @@ where
             );
 
             return Err(Error::Mailbox(MailboxError::IdnResponseInvalid {
-                idn_address: idn_address,
+                idn_address,
             }));
         }
 

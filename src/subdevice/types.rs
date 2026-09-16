@@ -54,7 +54,7 @@ pub struct SubDeviceConfig {
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub enum PdoProtocol {
     #[default]
-    EEPROM,
+    Eeprom,
     CoE,
     SoE,
 }
@@ -66,7 +66,7 @@ impl From<MailboxProtocols> for PdoProtocol {
         } else if value.contains(MailboxProtocols::SOE) {
             PdoProtocol::SoE
         } else {
-            PdoProtocol::EEPROM
+            PdoProtocol::Eeprom
         }
     }
 }

@@ -483,7 +483,7 @@ where
             pdi_len: self_.pdi_len,
             inner: self_.inner,
             dc_conf: HasDc {
-                sync0_period: sync0_period,
+                sync0_period,
                 sync0_shift: sync0_shift.as_nanos() as u64,
                 reference,
             },
