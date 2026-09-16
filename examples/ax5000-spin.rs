@@ -322,6 +322,7 @@ fn main() -> Result<(), Error> {
                         // Bytes 0-1:   u16, status word (S-0-0135)
                         // Bytes 2-5:   i32, position feedback (S-0-0051)
                         // Bytes 6-9:   i32, following distance (S-0-0189)
+                        // Bytes 10-11: i16, torque feedback (S-0-0084)
                         let inputs = subdevice.inputs_raw();
 
                         let status_word: u16 =
@@ -330,6 +331,8 @@ fn main() -> Result<(), Error> {
                             i32::from_le_bytes(inputs[2..=5].try_into().unwrap());
                         let _following_distance: i32 =
                             i32::from_le_bytes(inputs[6..=9].try_into().unwrap());
+                        let _torque_feedback: i16 =
+                            i16::from_le_bytes(inputs[10..=11].try_into().unwrap());
 
                         // Bit 3 - Drive observing values
                         if status_word & 0b00000000_00001000 != 0 {
@@ -424,45 +427,25 @@ pub async fn transition_ps(
         .await?;
     //Telegram type
     subdevice.idn_write_data(0, 15u16, [0x07u8, 0x00u8]).await?;
-    // //AT list
-    // subdevice
-    //     .idn_write_data(
-    //         0,
-    //         16u16,
-    //         [
-    //             0x06u8, 0x00u8, 0x06u8, 0x00u8, 0x33u8, 0x00u8, 0xbdu8, 0x00u8, 0x54u8, 0x00u8,
-    //         ],
-    //     )
-    //     .await?;
     //AT list
     subdevice
         .idn_write_data(
             0,
             16u16,
             [
-                0x04u8, 0x00u8, 0x04u8, 0x00u8, 0x33u8, 0x00u8, 0xbdu8, 0x00u8,
+                0x06u8, 0x00u8, 0x06u8, 0x00u8, 0x33u8, 0x00u8, 0xbdu8, 0x00u8, 0x54u8, 0x00u8,
             ],
         )
         .await?;
     //Telegram type
     subdevice.idn_write_data(1, 15u16, [0x07u8, 0x00u8]).await?;
-    // //AT list
-    // subdevice
-    //     .idn_write_data(
-    //         1,
-    //         16u16,
-    //         [
-    //             0x06u8, 0x00u8, 0x06u8, 0x00u8, 0x33u8, 0x00u8, 0xbdu8, 0x00u8, 0x54u8, 0x00u8,
-    //         ],
-    //     )
-    //     .await?;
     //AT list
     subdevice
         .idn_write_data(
             1,
             16u16,
             [
-                0x04u8, 0x00u8, 0x04u8, 0x00u8, 0x33u8, 0x00u8, 0xbdu8, 0x00u8,
+                0x06u8, 0x00u8, 0x06u8, 0x00u8, 0x33u8, 0x00u8, 0xbdu8, 0x00u8, 0x54u8, 0x00u8,
             ],
         )
         .await?;

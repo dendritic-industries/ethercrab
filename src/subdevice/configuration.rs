@@ -280,7 +280,6 @@ where
         direction: PdoDirection,
         global_offset: &mut PdiOffset,
     ) -> Result<PdiSegment, Error> {
-        log::info!("coe pdos!");
         if !matches!(self.state.config.mailbox.pdo_protocol, PdoProtocol::CoE) {
             fmt::warn!("Invariant: attempting to configure PDOs from COE with no SOE support");
         }
@@ -440,7 +439,6 @@ where
         direction: PdoDirection,
         global_offset: &mut PdiOffset,
     ) -> Result<PdiSegment, Error> {
-        log::info!("soe pdos!");
         if !matches!(self.state.config.mailbox.pdo_protocol, PdoProtocol::SoE) {
             fmt::warn!("Invariant: attempting to configure PDOs from SoE with no SoE support");
         }
@@ -634,7 +632,6 @@ where
         offset: &mut PdiOffset,
     ) -> Result<PdiSegment, Error> {
         let eeprom = self.eeprom();
-        log::info!("eeprom pdos!");
 
         let pdos = match direction {
             PdoDirection::MasterRead => {
